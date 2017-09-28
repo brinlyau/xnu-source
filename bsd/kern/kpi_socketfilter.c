@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003-2016 Apple Inc. All rights reserved.
+ * Copyright (c) 2003-2017 Apple Inc. All rights reserved.
  *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
  *
@@ -40,6 +40,7 @@
 #include <kern/debug.h>
 #include <net/kext_net.h>
 #include <net/if.h>
+#include <net/net_api_stats.h>
 #include <netinet/in_var.h>
 #include <netinet/ip.h>
 #include <netinet/ip_var.h>
@@ -51,6 +52,7 @@
 #include <libkern/libkern.h>
 #include <libkern/OSAtomic.h>
 
+#include <stdbool.h>
 #include <string.h>
 
 #define	SFEF_ATTACHED		0x1	/* SFE is on socket list */
@@ -90,6 +92,13 @@ static thread_t				sock_filter_cleanup_thread = NULL;
 
 static void sflt_cleanup_thread(void *, wait_result_t);
 static void sflt_detach_locked(struct socket_filter_entry *entry);
+
+#undef sflt_register
+static errno_t sflt_register_common(const struct sflt_filter *filter, int domain,
+    int type, int protocol, bool is_internal);
+errno_t sflt_register(const struct sflt_filter *filter, int domain,
+    int type, int protocol);
+
 
 #pragma mark -- Internal State Management --
 
@@ -996,70 +1005,6 @@ sflt_connectout(struct socket *so, const struct sockaddr *nam)
 }
 
 __private_extern__ int
-sflt_connectxout(struct socket *so, struct sockaddr_list **dst_sl0)
-{
-	struct sockaddr_list *dst_sl;
-	struct sockaddr_entry *se, *tse;
-	int modified = 0;
-	int error = 0;
-
-	if (so->so_filt == NULL || sflt_permission_check(sotoinpcb(so)))
-		return (0);
-
-	/* make a copy as sflt_connectout() releases socket lock */
-	dst_sl = sockaddrlist_dup(*dst_sl0, M_WAITOK);
-	if (dst_sl == NULL)
-		return (ENOBUFS);
-
-	/*
-	 * Hmm; we don't yet have a connectx socket filter callback,
-	 * so the closest thing to do is to probably call sflt_connectout()
-	 * as many times as there are addresses in the list, and bail
-	 * as soon as we get an error.
-	 */
-	TAILQ_FOREACH_SAFE(se, &dst_sl->sl_head, se_link, tse) {
-		char buf[SOCK_MAXADDRLEN];
-		struct sockaddr *sa;
-
-		VERIFY(se->se_addr != NULL);
-
-		/*
-		* Workaround for rdar://23362120
-		* Always pass a buffer that can hold an IPv6 socket address
-		*/
-		bzero(buf, sizeof (buf));
-		bcopy(se->se_addr, buf, se->se_addr->sa_len);
-		sa = (struct sockaddr *)buf;
-
-		error = sflt_connectout_common(so, sa);
-		if (error != 0)
-			break;
-
-		/*
-		 * If the address was modified, copy it back
-		 */
-		if (bcmp(se->se_addr, sa, se->se_addr->sa_len) != 0) {
-			bcopy(sa, se->se_addr, se->se_addr->sa_len);
-			modified = 1;
-		}
-	}
-
-	if (error != 0 || !modified) {
-		/* leave the original as is */
-		sockaddrlist_free(dst_sl);
-	} else {
-		/*
-		 * At least one address was modified and there were no errors;
-		 * ditch the original and return the modified list.
-		 */
-		sockaddrlist_free(*dst_sl0);
-		*dst_sl0 = dst_sl;
-	}
-
-	return (error);
-}
-
-__private_extern__ int
 sflt_setsockopt(struct socket *so, struct sockopt *sopt)
 {
 	if (so->so_filt == NULL || sflt_permission_check(sotoinpcb(so)))
@@ -1313,9 +1258,9 @@ struct solist {
 	struct socket *so;
 };
 
-errno_t
-sflt_register(const struct sflt_filter *filter, int domain, int type,
-    int	 protocol)
+static errno_t
+sflt_register_common(const struct sflt_filter *filter, int domain, int type,
+    int	 protocol, bool is_internal)
 {
 	struct socket_filter *sock_filt = NULL;
 	struct socket_filter *match = NULL;
@@ -1381,6 +1326,12 @@ sflt_register(const struct sflt_filter *filter, int domain, int type,
 			sock_filt->sf_proto = pr;
 		}
 		sflt_retain_locked(sock_filt);
+
+		OSIncrementAtomic64(&net_api_stats.nas_sfltr_register_count);
+		INC_ATOMIC_INT64_LIM(net_api_stats.nas_sfltr_register_total);
+		if (is_internal) {
+			INC_ATOMIC_INT64_LIM(net_api_stats.nas_sfltr_register_os_total);
+		}
 	}
 	lck_rw_unlock_exclusive(sock_filter_lock);
 
@@ -1479,6 +1430,20 @@ sflt_register(const struct sflt_filter *filter, int domain, int type,
 }
 
 errno_t
+sflt_register_internal(const struct sflt_filter *filter, int domain, int type,
+    int	 protocol)
+{
+	return (sflt_register_common(filter, domain, type, protocol, true));
+}
+
+errno_t
+sflt_register(const struct sflt_filter *filter, int domain, int type,
+    int	 protocol)
+{
+	return (sflt_register_common(filter, domain, type, protocol, false));
+}
+
+errno_t
 sflt_unregister(sflt_handle handle)
 {
 	struct socket_filter *filter;
@@ -1491,6 +1456,8 @@ sflt_unregister(sflt_handle handle)
 	}
 
 	if (filter) {
+		VERIFY(OSDecrementAtomic64(&net_api_stats.nas_sfltr_register_count) > 0);
+
 		/* Remove it from the global list */
 		TAILQ_REMOVE(&sock_filter_head, filter, sf_global_next);
 

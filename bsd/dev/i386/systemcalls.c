@@ -106,9 +106,7 @@ unix_syscall(x86_saved_state_t *state)
 	thread = current_thread();
 	uthread = get_bsdthread_info(thread);
 
-#if PROC_REF_DEBUG
 	uthread_reset_proc_refcount(uthread);
-#endif
 
 	/* Get the approriate proc; may be different from task's for vfork() */
 	is_vfork = uthread->uu_flag & UT_VFORK;
@@ -231,6 +229,12 @@ unix_syscall(x86_saved_state_t *state)
 
 	uthread->uu_flag &= ~UT_NOTCANCELPT;
 
+#if DEBUG || DEVELOPMENT
+	kern_allocation_name_t
+	prior __assert_only = thread_set_allocation_name(NULL);
+	assertf(prior == NULL, "thread_set_allocation_name(\"%s\") not cleared", kern_allocation_get_name(prior));
+#endif /* DEBUG || DEVELOPMENT */
+
 	if (__improbable(uthread->uu_lowpri_window)) {
 	        /*
 		 * task is marked as a low priority I/O type
@@ -285,9 +289,7 @@ unix_syscall64(x86_saved_state_t *state)
 	thread = current_thread();
 	uthread = get_bsdthread_info(thread);
 
-#if PROC_REF_DEBUG
 	uthread_reset_proc_refcount(uthread);
-#endif
 
 	/* Get the approriate proc; may be different from task's for vfork() */
 	if (__probable(!(uthread->uu_flag & UT_VFORK)))
@@ -436,6 +438,12 @@ unix_syscall64(x86_saved_state_t *state)
 	
 	uthread->uu_flag &= ~UT_NOTCANCELPT;
 
+#if DEBUG || DEVELOPMENT
+	kern_allocation_name_t
+	prior __assert_only = thread_set_allocation_name(NULL);
+	assertf(prior == NULL, "thread_set_allocation_name(\"%s\") not cleared", kern_allocation_get_name(prior));
+#endif /* DEBUG || DEVELOPMENT */
+
 	if (__improbable(uthread->uu_lowpri_window)) {
 	        /*
 		 * task is marked as a low priority I/O type
@@ -568,6 +576,12 @@ unix_syscall_return(int error)
 
 
 	uthread->uu_flag &= ~UT_NOTCANCELPT;
+
+#if DEBUG || DEVELOPMENT
+	kern_allocation_name_t
+	prior __assert_only = thread_set_allocation_name(NULL);
+	assertf(prior == NULL, "thread_set_allocation_name(\"%s\") not cleared", kern_allocation_get_name(prior));
+#endif /* DEBUG || DEVELOPMENT */
 
 	if (uthread->uu_lowpri_window) {
 	        /*

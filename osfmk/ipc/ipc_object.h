@@ -72,8 +72,6 @@
 #ifndef	_IPC_IPC_OBJECT_H_
 #define _IPC_IPC_OBJECT_H_
 
-#include <mach_rt.h>
-
 #include <mach/kern_return.h>
 #include <mach/message.h>
 #include <kern/locks.h>
@@ -102,7 +100,7 @@ struct ipc_object {
 	ipc_object_bits_t io_bits;
 	ipc_object_refs_t io_references;
 	lck_spin_t	io_lock_data;
-} __attribute__((__packed__));
+};
 
 /*
  * If another object type needs to participate in io_kotype()-based
@@ -173,6 +171,8 @@ extern void	io_free(
 	lck_spin_lock(&(io)->io_lock_data)
 #define	io_lock_try(io) \
 	lck_spin_try_lock(&(io)->io_lock_data)
+#define io_lock_held_kdp(io) \
+	kdp_lck_spin_is_acquired(&(io)->io_lock_data)
 #define	io_unlock(io) \
 	lck_spin_unlock(&(io)->io_lock_data)
 
